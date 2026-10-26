@@ -1,0 +1,28 @@
+{% extends "base.html" %}{% block content %}<section class="score-card card"><span class="eyebrow">QUIZ COMPLETE</span>
+    <h1>{{ quiz.score }} <small>/ {{ quiz.total }}</small></h1>
+    <p>{{ 'Excellent work!' if quiz.score/quiz.total >= 0.8 else 'Good practice — review the explanations below and try
+        again.' }}</p>
+    <div class="scorebar"><span style="width:{{ (quiz.score/quiz.total*100)|round|int}}%"></span></div><b>{{
+        (quiz.score/quiz.total*100)|round|int }}% score</b>
+</section>
+<div class="report-actions"><a class="primary button-link" href="{{ url_for('home') }}">Generate more</a><a
+        class="secondary button-link" href="{{ url_for('download_report', quiz_id=quiz.id) }}">Download PDF</a>
+    <form method="post" action="{{ url_for('email_report', quiz_id=quiz.id) }}"><button class="secondary">Email PDF
+            report</button></form><a class="secondary button-link" href="{{ url_for('profile') }}">View profile</a>
+</div>
+<h2>Answer review</h2>{% for q in questions %}{% set chosen = answers.get(loop.index0|string, -1) %}<section
+    class="card review">
+    <div class="qtop"><span class="qnum">QUESTION {{ loop.index }}</span><span
+            class="{{ 'correct' if chosen == q.answer else 'wrong' }}">{{ 'Correct' if chosen == q.answer else
+            'Incorrect' }}</span></div>
+    <h3>{{ q.question }}</h3>
+    <div class="options">{% for option in q.options %}<div
+            class="option static {{ 'right-answer' if loop.index0 == q.answer else ('wrong-answer' if chosen == loop.index0 else '') }}">
+            <span>{{ 'ABCD'[loop.index0] }}</span>
+            <div>{{ option }}{% if loop.index0 == q.answer %}<b class="tag">Correct answer</b>{% elif chosen ==
+                loop.index0 %}<b class="tag">Your answer</b>{% endif %}</div>
+        </div>{% endfor %}</div>
+    <div class="explanation"><b>Explanation</b>
+        <p>{{ q.explanation }}</p>
+    </div>
+</section>{% endfor %}{% endblock %}

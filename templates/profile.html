@@ -1,0 +1,22 @@
+{% extends "base.html" %}{% block content %}<section class="profile-hero card">
+    <div class="avatar">{{ user.name[0]|upper }}</div>
+    <div>
+        <h1>{{ user.name }}</h1>
+        <p class="muted">{{ user.email }}</p>
+    </div>
+</section>
+<div class="section-title">
+    <h2>Your quiz history</h2><a class="primary button-link" href="{{ url_for('home') }}">+ New quiz</a>
+</div>
+{% if quizzes %}<div class="history">{% for q in quizzes %}<a class="card history-item"
+        href="{{ url_for('report', quiz_id=q.id) }}">
+        <div><span class="eyebrow">{{ q.difficulty|upper }} · {{ q.total }} QUESTIONS</span>
+            <h3>{{ q.topic }}</h3>
+            <p class="muted">{{ (q.created_at.replace(tzinfo=timezone.utc).astimezone(ZoneInfo('Asia/Kolkata'))).strftime('%d %b %Y, %I:%M %p') }}</p>
+        </div>
+        <div class="history-score">{{ q.score }}/{{ q.total }} <span>View report →</span></div>
+    </a>{% endfor %}</div>{% else %}<section class="card empty">
+    <h3>No quizzes yet</h3>
+    <p>Your completed quizzes will appear here.</p><a class="primary button-link" href="{{ url_for('home') }}">Create
+        your first quiz</a>
+</section>{% endif %}{% endblock %}
