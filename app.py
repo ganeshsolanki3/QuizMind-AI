@@ -1,13 +1,10 @@
 """QuizMind AI — simple Flask quiz app.
 Keep API keys and email credentials in .env; do not put secrets in source code.
 """
-import os, json, io, smtplib
-from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
-
+import os, json, io, smtplib, secrets, hashlib, html
+from datetime import datetime, timedelta
 from email.message import EmailMessage
 from functools import wraps
-from xml.sax.saxutils import escape
 
 from dotenv import load_dotenv
 from flask import Flask, render_template, request, redirect, url_for, flash, session, send_file
@@ -16,9 +13,11 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from google import genai
 from reportlab.lib.pagesizes import A4
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
-from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 from reportlab.lib.units import inch
+from reportlab.platypus import Table, TableStyle, KeepTogether
+from reportlab.lib.enums import TA_CENTER, TA_LEFT
 
 load_dotenv()
 app = Flask(__name__)
@@ -34,6 +33,8 @@ MAIL_SENDER = os.getenv("MAIL_SENDER", "")
 MAIL_PASSWORD = os.getenv("MAIL_PASSWORD", "")
 MAIL_SERVER = os.getenv("MAIL_SERVER", "smtp.gmail.com")
 MAIL_PORT = int(os.getenv("MAIL_PORT", "587"))
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
+OTP_TTL_MINUTES = int(os.getenv("OTP_TTL_MINUTES", "10"))
 
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -51,7 +52,7 @@ class Quiz(db.Model):
     answers_json = db.Column(db.Text, nullable=False, default="{}")
     score = db.Column(db.Integer, default=0)
     total = db.Column(db.Integer, default=0)
-    created_at = db.Column(db.DateTime,default=lambda: datetime.now(timezone.utc))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 def login_required(fn):
     @wraps(fn)
@@ -64,70 +65,48 @@ def login_required(fn):
 def current_user():
     return db.session.get(User, session.get("user_id"))
 
-
 def make_pdf(quiz, user):
-    """Create a PDF report safely, even if AI text contains HTML/XML symbols."""
     questions = json.loads(quiz.questions_json)
     answers = json.loads(quiz.answers_json or "{}")
-
     memory = io.BytesIO()
-    doc = SimpleDocTemplate(
-        memory, pagesize=A4,
-        rightMargin=42, leftMargin=42,
-        topMargin=42, bottomMargin=42
-    )
+    doc = SimpleDocTemplate(memory, pagesize=A4, rightMargin=42, leftMargin=42, topMargin=36, bottomMargin=40,
+                            title=f"QuizMind AI Report - {quiz.topic}", author="QuizMind AI")
     styles = getSampleStyleSheet()
-
-    # Escape AI-generated text so symbols like < and & cannot break the PDF.
-    safe = lambda value: escape(str(value))
-
-    story = [
-        Paragraph("QuizMind AI - Quiz Report", styles["Title"]),
-        Paragraph(f"Name: {safe(user.name)} | Email: {safe(user.email)}",
-                  styles["Normal"]),
-        Paragraph(
-            f"Topic: {safe(quiz.topic)} | Difficulty: {safe(quiz.difficulty.title())}",
-            styles["Normal"]
-        ),
-        Paragraph(f"Score: {quiz.score}/{quiz.total}", styles["Heading2"]),
-        Spacer(1, 12)
-    ]
-
+    styles.add(ParagraphStyle(name="CoverTitle", parent=styles["Title"], fontName="Helvetica-Bold", fontSize=24, leading=29, textColor=colors.HexColor("#10233f"), alignment=TA_LEFT, spaceAfter=8))
+    styles.add(ParagraphStyle(name="Sub", parent=styles["Normal"], fontSize=10, leading=15, textColor=colors.HexColor("#52627a"), spaceAfter=5))
+    styles.add(ParagraphStyle(name="Question", parent=styles["Heading3"], fontSize=12, leading=16, textColor=colors.HexColor("#142b4a"), spaceAfter=7))
+    styles.add(ParagraphStyle(name="Answer", parent=styles["BodyText"], fontSize=9, leading=13, textColor=colors.HexColor("#26364c"), spaceAfter=4))
+    styles.add(ParagraphStyle(name="Explain", parent=styles["BodyText"], fontSize=9, leading=13, textColor=colors.HexColor("#52627a"), leftIndent=8, spaceBefore=3, spaceAfter=4))
+    esc = lambda x: html.escape(str(x))
+    pct = round((quiz.score / quiz.total) * 100) if quiz.total else 0
+    story = [Paragraph("QUIZMIND AI", styles["Sub"]), Paragraph("Your Quiz Report", styles["CoverTitle"]),
+             Paragraph(f"{esc(quiz.topic)}  ·  {esc(quiz.difficulty.title())} difficulty", styles["Sub"]), Spacer(1, 10)]
+    summary = [[Paragraph(f"<b>{quiz.score}/{quiz.total}</b><br/><font size='8'>CORRECT</font>", styles["Answer"]),
+                Paragraph(f"<b>{pct}%</b><br/><font size='8'>SCORE</font>", styles["Answer"]),
+                Paragraph(f"<b>{len(questions)}</b><br/><font size='8'>QUESTIONS</font>", styles["Answer"]),
+                Paragraph(f"<b>{esc(user.name)}</b><br/><font size='8'>LEARNER</font>", styles["Answer"])]]
+    t = Table(summary, colWidths=[doc.width/4]*4)
+    t.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,-1),colors.HexColor("#eaf4ff")),("BOX",(0,0),(-1,-1),0.7,colors.HexColor("#c5d8ee")),("INNERGRID",(0,0),(-1,-1),0.5,colors.white),("VALIGN",(0,0),(-1,-1),"MIDDLE"),("LEFTPADDING",(0,0),(-1,-1),10),("TOPPADDING",(0,0),(-1,-1),12),("BOTTOMPADDING",(0,0),(-1,-1),12)]))
+    story += [t, Spacer(1, 12), Paragraph(f"Prepared for {esc(user.name)} ({esc(user.email)}) · {quiz.created_at.strftime('%d %b %Y, %I:%M %p') if quiz.created_at else ''}", styles["Sub"]), Spacer(1, 14)]
     for i, q in enumerate(questions):
         chosen = answers.get(str(i), None)
-        correct_index = q["answer"]
-        is_right = chosen is not None and int(chosen) == correct_index
-
-        story.append(Paragraph(
-            f"{i + 1}. {safe(q['question'])}", styles["Heading3"]
-        ))
-
-        if chosen is None:
-            your_answer = "Not answered"
-        else:
-            your_answer = q["options"][int(chosen)]
-
-        status = "CORRECT" if is_right else "INCORRECT"
-        story.append(Paragraph(
-            f"Your answer: {safe(your_answer)} - {status}",
-            styles["Normal"]
-        ))
-        story.append(Paragraph(
-            f"Correct answer: {safe(q['options'][correct_index])}",
-            styles["Normal"]
-        ))
-
-        options_text = " | ".join(str(opt) for opt in q["options"])
-        story.append(Paragraph(
-            f"Options: {safe(options_text)}", styles["Normal"]
-        ))
-        story.append(Paragraph(
-            f"Explanation: {safe(q['explanation'])}",
-            styles["BodyText"]
-        ))
-        story.append(Spacer(1, 10))
-
-    doc.build(story)
+        correct_idx = q.get("answer", 0)
+        correct = q.get("options", [])[correct_idx] if 0 <= correct_idx < len(q.get("options", [])) else "Unavailable"
+        chosen_text = "Not answered" if chosen is None else (q["options"][int(chosen)] if str(chosen).isdigit() and 0 <= int(chosen) < len(q["options"]) else "Not answered")
+        is_right = chosen is not None and str(chosen).isdigit() and int(chosen) == correct_idx
+        status_color = "#147d50" if is_right else "#bd3446"
+        block = [Paragraph(f"QUESTION {i+1:02d}", styles["Sub"]), Paragraph(esc(q.get("question", "")), styles["Question"]),
+                 Paragraph(f"<b>Your answer:</b> {esc(chosen_text)}  <font color='{status_color}'><b>{'CORRECT' if is_right else 'INCORRECT'}</b></font>", styles["Answer"]),
+                 Paragraph(f"<b>Correct answer:</b> {esc(correct)}", styles["Answer"]),
+                 Paragraph(f"<b>Explanation:</b> {esc(q.get('explanation', 'No explanation provided.'))}", styles["Explain"]), Spacer(1, 8)]
+        card = Table([[block]], colWidths=[doc.width])
+        card.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,-1),colors.HexColor("#f7f9fc")),("BOX",(0,0),(-1,-1),0.6,colors.HexColor("#dbe4ef")),("LEFTPADDING",(0,0),(-1,-1),12),("RIGHTPADDING",(0,0),(-1,-1),12),("TOPPADDING",(0,0),(-1,-1),10),("BOTTOMPADDING",(0,0),(-1,-1),2)]))
+        story.extend([KeepTogether(card), Spacer(1, 9)])
+    def footer(canvas, document):
+        canvas.saveState(); canvas.setStrokeColor(colors.HexColor("#dbe4ef")); canvas.line(42, 28, A4[0]-42, 28)
+        canvas.setFont("Helvetica", 8); canvas.setFillColor(colors.HexColor("#6b7890")); canvas.drawString(42, 16, "QuizMind AI · Learn something new, one quiz at a time")
+        canvas.drawRightString(A4[0]-42, 16, f"Page {document.page}"); canvas.restoreState()
+    doc.build(story, onFirstPage=footer, onLaterPages=footer)
     memory.seek(0)
     return memory
 
@@ -145,7 +124,6 @@ def send_report_email(quiz, user):
         server.starttls()
         server.login(MAIL_SENDER, MAIL_PASSWORD)
         server.send_message(msg)
-        
 
 @app.route("/")
 def home():
@@ -182,6 +160,97 @@ def login():
 def logout():
     session.clear()
     return redirect(url_for("login"))
+
+@app.route("/forgot-password", methods=["GET", "POST"])
+def forgot_password():
+    if request.method == "POST":
+        email = request.form.get("email", "").strip().lower()
+        user = User.query.filter_by(email=email).first()
+        if not user:
+            flash("If that email is registered, a verification code will be sent.")
+            return redirect(url_for("forgot_password"))
+        otp = f"{secrets.randbelow(1000000):06d}"
+        session["reset_email"] = email
+        session["reset_otp_hash"] = hashlib.sha256(otp.encode()).hexdigest()
+        session["reset_otp_expires"] = (datetime.utcnow() + timedelta(minutes=OTP_TTL_MINUTES)).timestamp()
+        session["reset_verified"] = False
+        try:
+            msg = EmailMessage(); msg["Subject"] = "QuizMind AI password reset code"; msg["From"] = MAIL_SENDER; msg["To"] = email
+            msg.set_content(f"Your QuizMind AI password reset code is {otp}. It expires in {OTP_TTL_MINUTES} minutes. If you did not request this, ignore this email.")
+            if MAIL_PORT == 465:
+                with smtplib.SMTP_SSL(MAIL_SERVER, MAIL_PORT, timeout=20) as server:
+                    server.login(MAIL_SENDER, MAIL_PASSWORD); server.send_message(msg)
+            else:
+                with smtplib.SMTP(MAIL_SERVER, MAIL_PORT, timeout=20) as server:
+                    server.starttls(); server.login(MAIL_SENDER, MAIL_PASSWORD); server.send_message(msg)
+            flash("Verification code sent. Check your email and spam folder.")
+            return redirect(url_for("verify_reset_otp"))
+        except Exception:
+            app.logger.exception("Password reset email failed")
+            flash("Could not send the code. Email service may be blocked or misconfigured; try again later.")
+    return render_template("forgot_password.html")
+
+@app.route("/verify-reset-otp", methods=["GET", "POST"])
+def verify_reset_otp():
+    if not session.get("reset_email") or not session.get("reset_otp_hash"):
+        return redirect(url_for("forgot_password"))
+    if request.method == "POST":
+        otp = request.form.get("otp", "").strip()
+        if datetime.utcnow().timestamp() > session.get("reset_otp_expires", 0):
+            session.pop("reset_otp_hash", None); flash("Code expired. Request a new one."); return redirect(url_for("forgot_password"))
+        if secrets.compare_digest(hashlib.sha256(otp.encode()).hexdigest(), session.get("reset_otp_hash", "")):
+            session["reset_verified"] = True
+            return redirect(url_for("reset_password"))
+        flash("Incorrect verification code.")
+    return render_template("verify_otp.html")
+
+@app.route("/reset-password", methods=["GET", "POST"])
+def reset_password():
+    if not session.get("reset_verified") or not session.get("reset_email"):
+        return redirect(url_for("forgot_password"))
+    if request.method == "POST":
+        password = request.form.get("password", "")
+        confirm = request.form.get("confirm_password", "")
+        if len(password) < 8:
+            flash("Password must be at least 8 characters.")
+        elif password != confirm:
+            flash("Passwords do not match.")
+        else:
+            user = User.query.filter_by(email=session["reset_email"]).first()
+            if not user:
+                flash("Account not found. Please sign up again."); return redirect(url_for("signup"))
+            user.password_hash = generate_password_hash(password); db.session.commit()
+            for key in ("reset_email", "reset_otp_hash", "reset_otp_expires", "reset_verified"):
+                session.pop(key, None)
+            session.pop("user_id", None)
+            flash("Password changed successfully. Please log in.")
+            return redirect(url_for("login"))
+    return render_template("reset_password.html")
+
+@app.route("/admin", methods=["GET", "POST"])
+def admin_login():
+    if session.get("is_admin"):
+        return redirect(url_for("admin_dashboard"))
+    if request.method == "POST":
+        if ADMIN_PASSWORD and secrets.compare_digest(request.form.get("password", ""), ADMIN_PASSWORD):
+            session["is_admin"] = True
+            return redirect(url_for("admin_dashboard"))
+        flash("Incorrect admin password or ADMIN_PASSWORD is not configured on Render.")
+    return render_template("admin_login.html")
+
+@app.route("/admin/dashboard")
+def admin_dashboard():
+    if not session.get("is_admin"):
+        return redirect(url_for("admin_login"))
+    users = User.query.order_by(User.id.desc()).all()
+    quizzes = Quiz.query.count()
+    return render_template("admin_dashboard.html", users=users, total_users=len(users), total_quizzes=quizzes,
+                           completed_quizzes=Quiz.query.filter(Quiz.answers_json != "{}").count())
+
+@app.route("/admin/logout")
+def admin_logout():
+    session.pop("is_admin", None)
+    return redirect(url_for("admin_login"))
 
 @app.route("/generate", methods=["POST"])
 @login_required
@@ -277,13 +346,6 @@ def profile():
     user = current_user()
     quizzes = Quiz.query.filter_by(user_id=user.id).order_by(Quiz.created_at.desc()).all()
     return render_template("profile.html", user=user, quizzes=quizzes)
-
-@app.context_processor
-def inject_timezone():
-    return {
-        "timezone": timezone,
-        "ZoneInfo": ZoneInfo
-    }
 
 with app.app_context():
     db.create_all()

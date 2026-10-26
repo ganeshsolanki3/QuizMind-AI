@@ -2,5 +2,5 @@
 <form method="post">{% if mode == 'signup' %}<label>Full name</label><input name="name" autocomplete="name" required placeholder="Your name">{% endif %}
 <label>Email address</label><input type="email" name="email" autocomplete="email" required placeholder="you@example.com">
 <label>Password</label><div class="password"><input id="password" type="password" name="password" required minlength="{{ 8 if mode == 'signup' else 1 }}" placeholder="Password"><label class="show"><input type="checkbox" onclick="document.getElementById('password').type=this.checked?'text':'password'"> Show</label></div>
-<button class="primary wide">{{ 'Sign up' if mode == 'signup' else 'Log in' }}</button></form>
+<button class="primary wide">{{ 'Sign up' if mode == 'signup' else 'Log in' }}</button></form>{% if mode == 'login' %}<p class="switch"><a href="{{ url_for('forgot_password') }}">Forgot password?</a></p>{% endif %}
 <p class="switch">{{ 'Already have an account?' if mode == 'signup' else "Don't have an account?" }} <a href="{{ url_for('login' if mode == 'signup' else 'signup') }}">{{ 'Log in' if mode == 'signup' else 'Sign up' }}</a></p></section>{% endblock %}

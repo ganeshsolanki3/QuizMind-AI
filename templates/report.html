@@ -2,7 +2,7 @@
     <h1>{{ quiz.score }} <small>/ {{ quiz.total }}</small></h1>
     <p>{{ 'Excellent work!' if quiz.score/quiz.total >= 0.8 else 'Good practice — review the explanations below and try
         again.' }}</p>
-    <div class="scorebar"><span style="width:{{ (quiz.score/quiz.total*100)|round|int}}%"></span></div><b>{{
+    <div class="scorebar"><span style="width:{{ (quiz.score/quiz.total*100)|round }}%"></span></div><b>{{
         (quiz.score/quiz.total*100)|round|int }}% score</b>
 </section>
 <div class="report-actions"><a class="primary button-link" href="{{ url_for('home') }}">Generate more</a><a
